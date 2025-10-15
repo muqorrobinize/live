@@ -1,0 +1,11 @@
+{
+  "name": "gemini-voice-chat-vercel",
+  "version": "1.0.0",
+  "description": "Realtime voice chat with Gemini on Vercel",
+  "main": "index.html",
+  "scripts": {
+    "start": "echo 'No start script, deploy to Vercel directly.'"
+  },
+  "author": "",
+  "license": "ISC"
+}
