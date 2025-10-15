@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Realtime Voice Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #000000;
+            color: #E5E7EB;
+        }
+        #visualizer {
+            transition: opacity 0.5s ease-in-out;
+        }
+        .icon-button {
+            transition: background-color 0.2s ease-in-out, transform 0.2s ease-in-out;
+        }
+        .icon-button:hover {
+            background-color: #374151;
+        }
+        .icon-button:active {
+            transform: scale(0.95);
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.7; }
+            50% { transform: scale(1.05); opacity: 1; }
+        }
+        .pulsing {
+            animation: pulse 2s infinite ease-in-out;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4 overflow-hidden">
+
+    <div id="app-container" class="w-full h-full flex flex-col items-center justify-center text-center max-w-xl mx-auto">
+        
+        <!-- Tombol Mulai -->
+        <div id="start-screen" class="flex flex-col items-center justify-center">
+            <h1 class="text-3xl font-bold text-white mb-2">Gemini Voice Chat</h1>
+            <p class="text-gray-400 mb-8">Tekan tombol untuk memulai percakapan</p>
+            <button id="start-btn" class="icon-button bg-gray-800 rounded-full p-6 text-white">
+                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>
+            </button>
+        </div>
+
+        <!-- Layar Percakapan Utama -->
+        <div id="chat-screen" class="hidden w-full h-full flex flex-col items-center justify-between">
+            <!-- Header -->
+            <div class="w-full">
+                <p id="status-text" class="text-lg font-medium text-gray-300 h-8 transition-opacity duration-300">Tekan lingkaran untuk bicara</p>
+            </div>
+            
+            <!-- Visualizer -->
+            <div class="flex-grow flex items-center justify-center w-full my-4">
+                <canvas id="visualizer" width="300" height="300" class="rounded-full cursor-pointer"></canvas>
+            </div>
+            
+            <!-- Footer -->
+            <div class="w-full">
+                <button id="stop-btn" class="icon-button bg-red-800/80 hover:bg-red-700 rounded-full p-4 text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <audio id="tts-audio" style="display: none;"></audio>
+    <p class="text-xs text-gray-600 absolute bottom-2 left-2">Powered by Gemini & Web Speech API</p>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // --- PENGELOLA KUNCI API ---
+        const apiKeys = [
+            "AIzaSyDZpeK9i8afZfxfycgCqoHXqIDn-lVbzc8", "AIzaSyAdqT_s4edUqZTwWBVcYQS35xUcjcDhvoQ",
+            "AIzaSyBNvBatH8wdPltmsOJUPmpp86mJ1RvRos8", "AIzaSyC4c5NqreMABE9uDWiGQJR1DwqyDtvC42w",
+            "AIzaSyDxYuSo9HbS7VRxFI1VFDpLNf7HXdhM-iE", "AIzaSyD2cCy3QnkURP5JhMYAOYKXv7VxXl8CMU8"
+        ];
+        let keyStatus = new Array(apiKeys.length).fill(false);
+        const ApiManager = {
+            async getAvailableKeyIndex() {
+                let index = keyStatus.findIndex(status => !status);
+                while (index === -1) { await new Promise(r => setTimeout(r, 200)); index = keyStatus.findIndex(status => !status); }
+                keyStatus[index] = true; return index;
+            },
+            releaseKey(index) { keyStatus[index] = false; },
+            async request(apiFunction) {
+                const attemptedIndexes = new Set();
+                while (attemptedIndexes.size < apiKeys.length) {
+                    const keyIndex = await this.getAvailableKeyIndex();
+                    if (attemptedIndexes.has(keyIndex)) { this.releaseKey(keyIndex); continue; }
+                    try { const result = await apiFunction(apiKeys[keyIndex]); this.releaseKey(keyIndex); return result; } 
+                    catch (error) { console.error(`API call with key index ${keyIndex} failed:`, error); attemptedIndexes.add(keyIndex); this.releaseKey(keyIndex); }
+                }
+                throw new Error("All API keys failed.");
+            }
+        };
+
+        // --- ELEMEN DOM & VARIABEL STATE ---
+        const E = id => document.getElementById(id);
+        const elements = {
+            startScreen: E('start-screen'), chatScreen: E('chat-screen'),
+            startBtn: E('start-btn'), stopBtn: E('stop-btn'),
+            statusText: E('status-text'), canvas: E('visualizer'),
+            ttsAudio: E('tts-audio'),
+        };
+        const canvasCtx = elements.canvas.getContext('2d');
+        let audioContext, analyser, sourceNode;
+        let isListening = false, isSpeaking = false, conversationHistory = [];
+        
+        // --- Inisialisasi Speech Recognition API ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert("Maaf, browser Anda tidak mendukung Web Speech API. Coba gunakan Chrome.");
+            return;
+        }
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.lang = 'id-ID';
+        recognition.interimResults = false;
+
+        // --- VISUALIZER AUDIO ---
+        function setupAudioVisualizer(stream) {
+            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            
+            if (sourceNode) sourceNode.disconnect();
+            sourceNode = stream ? audioContext.createMediaStreamSource(stream) : audioContext.createMediaElementSource(elements.ttsAudio);
+            
+            sourceNode.connect(analyser);
+            if (!stream) { // Jika dari TTS, sambungkan juga ke output
+                analyser.connect(audioContext.destination);
+            }
+            drawVisualizer();
+        }
+        
+        function drawVisualizer() {
+            if (!analyser || (isListening === false && isSpeaking === false)) {
+                drawIdleVisualizer();
+                return;
+            };
+            
+            requestAnimationFrame(drawVisualizer);
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            analyser.getByteTimeDomainData(dataArray);
+
+            const { width, height } = elements.canvas;
+            canvasCtx.fillStyle = '#000000';
+            canvasCtx.fillRect(0, 0, width, height);
+
+            const baseRadius = width / 4;
+            const maxAmplitude = 128;
+            
+            let totalAmplitude = 0;
+            for (let i = 0; i < bufferLength; i++) {
+                totalAmplitude += Math.abs(dataArray[i] - 128);
+            }
+            const avgAmplitude = totalAmplitude / bufferLength;
+            const radiusMultiplier = 1 + (avgAmplitude / maxAmplitude) * 1.5;
+
+            // Draw concentric circles
+            for (let i = 1; i <= 3; i++) {
+                canvasCtx.beginPath();
+                canvasCtx.strokeStyle = `rgba(79, 70, 229, ${0.6 / i})`;
+                canvasCtx.lineWidth = 3;
+                const radius = baseRadius * i * 0.4 * radiusMultiplier;
+                canvasCtx.arc(width / 2, height / 2, radius > 0 ? radius : 1, 0, 2 * Math.PI);
+                canvasCtx.stroke();
+            }
+        }
+        
+        function drawIdleVisualizer(pulsing = false) {
+             const { width, height } = elements.canvas;
+            canvasCtx.fillStyle = '#000000';
+            canvasCtx.fillRect(0, 0, width, height);
+            canvasCtx.beginPath();
+            canvasCtx.strokeStyle = 'rgba(79, 70, 229, 0.7)';
+            canvasCtx.lineWidth = 3;
+            canvasCtx.arc(width / 2, height / 2, width / 4, 0, 2 * Math.PI);
+            canvasCtx.stroke();
+            if(pulsing) elements.canvas.classList.add('pulsing');
+            else elements.canvas.classList.remove('pulsing');
+        }
+
+        // --- FUNGSI API ---
+        async function getLLMResponse(prompt, apiKey) {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+            const systemPrompt = "Anda adalah asisten AI percakapan yang ramah dan ringkas. Jawab dalam Bahasa Indonesia.";
+            conversationHistory.push({ role: "user", parts: [{ text: prompt }] });
+            
+            const payload = {
+                "system_instruction": { "parts": [{ "text": systemPrompt }] },
+                "contents": conversationHistory.slice(-10) // Kirim 10 interaksi terakhir
+            };
+            const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            if (!response.ok) throw new Error(`LLM API error: ${response.status}`);
+            const data = await response.json();
+            const text = data.candidates[0].content.parts[0].text;
+            conversationHistory.push({ role: "model", parts: [{ text }] });
+            return text;
+        }
+
+        async function getTTSAudio(text, apiKey) {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{ parts: [{ text }] }],
+                generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } } },
+            };
+            const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            if (!response.ok) throw new Error(`TTS API error: ${response.statusText}`);
+            const result = await response.json();
+            const part = result?.candidates?.[0]?.content?.parts?.[0];
+            if (part?.inlineData?.data) {
+                const audioData = part.inlineData.data; 
+                const sampleRate = parseInt(part.inlineData.mimeType.match(/rate=(\d+)/)[1], 10);
+                return pcmToWav(audioData, sampleRate);
+            }
+            throw new Error("No audio data in TTS response");
+        }
+        
+        function pcmToWav(base64Data, sampleRate) {
+            const binaryString = window.atob(base64Data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) { bytes[i] = binaryString.charCodeAt(i); }
+            const pcm16 = new Int16Array(bytes.buffer);
+            const buffer = new ArrayBuffer(44 + pcm16.length * 2);
+            const view = new DataView(buffer);
+            // Header WAV
+            view.setUint32(0, 0x52494646, false); // "RIFF"
+            view.setUint32(4, 36 + pcm16.length * 2, true);
+            view.setUint32(8, 0x57415645, false); // "WAVE"
+            view.setUint32(12, 0x666d7420, false); // "fmt "
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true); // PCM
+            view.setUint16(22, 1, true); // Mono
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true); // ByteRate
+            view.setUint16(32, 2, true); // BlockAlign
+            view.setUint16(34, 16, true); // BitsPerSample
+            view.setUint32(36, 0x64617461, false); // "data"
+            view.setUint32(40, pcm16.length * 2, true);
+            // Data
+            for (let i = 0; i < pcm16.length; i++) {
+                view.setInt16(44 + i * 2, pcm16[i], true);
+            }
+            return URL.createObjectURL(new Blob([view], { type: 'audio/wav' }));
+        }
+
+        // --- LOGIKA UTAMA APLIKASI ---
+        async function startConversation() {
+            elements.startScreen.classList.add('hidden');
+            elements.chatScreen.classList.remove('hidden');
+            drawIdleVisualizer();
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                setupAudioVisualizer(stream);
+            } catch (err) {
+                console.error("Error accessing microphone:", err);
+                elements.statusText.textContent = "Izin mikrofon ditolak.";
+            }
+        }
+        
+        function stopConversation() {
+            if (sourceNode) sourceNode.mediaStream.getTracks().forEach(track => track.stop());
+            isListening = false;
+            isSpeaking = false;
+            if(audioContext) audioContext.close().then(() => {
+                audioContext = null;
+                analyser = null;
+                sourceNode = null;
+            });
+            elements.chatScreen.classList.add('hidden');
+            elements.startScreen.classList.remove('hidden');
+        }
+
+        function handleListen() {
+            if (isListening || isSpeaking) return;
+            isListening = true;
+            elements.statusText.textContent = "Mendengarkan...";
+            recognition.start();
+            drawVisualizer(); 
+        }
+
+        recognition.onresult = async (event) => {
+            isListening = false;
+            const transcript = event.results[0][0].transcript;
+            elements.statusText.textContent = "Sedang berpikir...";
+            drawIdleVisualizer(true); // pulsing
+            
+            try {
+                const llmResponse = await ApiManager.request(key => getLLMResponse(transcript, key));
+                drawIdleVisualizer(false);
+                isSpeaking = true;
+                elements.statusText.textContent = "Berbicara...";
+                
+                const audioUrl = await ApiManager.request(key => getTTSAudio(llmResponse, key));
+                elements.ttsAudio.src = audioUrl;
+                setupAudioVisualizer(null); // setup for TTS audio
+                elements.ttsAudio.play();
+            } catch (error) {
+                console.error("Error during API processing:", error);
+                elements.statusText.textContent = "Terjadi kesalahan. Coba lagi.";
+                isSpeaking = false;
+                drawIdleVisualizer();
+            }
+        };
+        
+        recognition.onerror = (event) => {
+            console.error('Speech recognition error:', event.error);
+            elements.statusText.textContent = "Tidak dapat mendengar. Coba lagi.";
+            isListening = false;
+            drawIdleVisualizer();
+        };
+
+        recognition.onend = () => {
+            if (isListening) { // Jika berhenti tanpa hasil
+                isListening = false;
+                elements.statusText.textContent = "Tekan lingkaran untuk bicara";
+                drawIdleVisualizer();
+            }
+        };
+        
+        elements.ttsAudio.onended = () => {
+            isSpeaking = false;
+            elements.statusText.textContent = "Tekan lingkaran untuk bicara";
+            drawIdleVisualizer();
+            // Siapkan lagi visualizer untuk input mic
+             navigator.mediaDevices.getUserMedia({ audio: true }).then(setupAudioVisualizer).catch(console.error);
+        };
+
+        // --- EVENT LISTENERS ---
+        elements.startBtn.addEventListener('click', startConversation);
+        elements.stopBtn.addEventListener('click', stopConversation);
+        elements.canvas.addEventListener('click', handleListen);
+    });
+    </script>
+</body>
+</html>
